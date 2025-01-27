@@ -2,7 +2,8 @@ import os
 from pydub import AudioSegment
 from openpyxl import load_workbook
 from google.cloud import texttospeech
-from moviepy import TextClip, AudioFileClip, CompositeVideoClip, concatenate_videoclips
+from moviepy import TextClip, AudioFileClip, concatenate_videoclips
+from moviepy.video.fx import CrossFadeIn, CrossFadeOut
 
 
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service_account.json"
@@ -33,6 +34,7 @@ audio_config = texttospeech.AudioConfig(
 
 
 def generate_speech(text, voice, filename):
+
     if not text or not text.strip():
         return None
 
@@ -49,23 +51,26 @@ def generate_speech(text, voice, filename):
 
     with open(path, "wb") as f:
         f.write(response.audio_content)
+
     return AudioSegment.from_file(path)
 
 
 def generate_video(text, duration):
-    video_size = (1920, 1080)
-    font_size = 60
-    text_color = (255, 255, 255)
-    bg_color = (30, 30, 30)
-    fade_duration = 0.5
+    clip = TextClip(
+        text=text,
+        font="dejavu-sans-book.otf",
+        font_size=60,
+        color=(255, 255, 255),
+        size=(1920, 1080),
+        method="caption",
+        text_align="center",
+        bg_color=(30, 30, 30),
+        duration=duration
+    )
 
-    clip = TextClip(font="dejavu-sans-book.otf", text=text, font_size=font_size, size=video_size,
-                         color=text_color, method="caption", text_align="center", duration=duration)
-
-    return CompositeVideoClip([clip])
+    return clip
 
 
-segments = []
 video_clips = []
 
 for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=1):
@@ -102,30 +107,28 @@ for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=1
             row_segments.append(AudioSegment.silent(duration=1000))
 
     if row_segments:
-        row_segments.pop()
-        segments.extend(row_segments)
-        segments.append(AudioSegment.silent(duration=2000))
+        if len(row_segments) > 0:
+            row_segments.pop()
+
+        row_audio = sum(row_segments)
 
         audio_filename = f"output/audio_{row_idx}.mp3"
-        row_audio = sum(row_segments)
         row_audio.export(audio_filename, format="mp3")
 
-        video_filename = f"output/video_{row_idx}.mp4"
-        text = row[0]
+        row_text = " | ".join([str(x) for x in row if x])
+
         duration = row_audio.duration_seconds
 
-        video_clip = generate_video(
-            text, duration)
+        video_clip = generate_video(row_text, duration)
+        video_clip = video_clip.with_audio(AudioFileClip(audio_filename))
+
         video_clips.append(video_clip)
 
-if segments:
-    final_audio = sum(segments)
-    final_audio.export("output/final.mp3", format="mp3")
-    print("Audiofile created: output/final.mp3")
-
 if video_clips:
-    final_video = concatenate_videoclips(clips=video_clips, method="chain")
-    final_video = final_video.with_audio(AudioFileClip("output/final.mp3"))
+    final_video = concatenate_videoclips(video_clips, method="chain")
+
     final_video.write_videofile(
         "output/final_video.mp4", fps=30, codec="libx264", audio_codec="aac")
-    print("Video file created: output/final_video.mp4")
+    print("Final video file created: output/final_video.mp4")
+else:
+    print("No non-empty rows/cells were found for audio/video generation.")
