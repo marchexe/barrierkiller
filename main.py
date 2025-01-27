@@ -2,6 +2,7 @@ import os
 from pydub import AudioSegment
 from openpyxl import load_workbook
 from google.cloud import texttospeech
+from moviepy import TextClip, CompositeVideoClip, ColorClip, AudioFileClip, concatenate_videoclips
 
 os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = 'service_account.json'
 client = texttospeech.TextToSpeechClient()
@@ -50,7 +51,28 @@ def generate_speech(text, voice, filename):
     return AudioSegment.from_file(path)
 
 
+def generate_video(text, duration):
+    video_size = (1920, 1080)
+    font_size = 60
+    text_color = (255, 255, 255)
+    bg_color = (30, 30, 30)
+    fade_duration = 0.5
+
+    font_path = "dejavu-sans-book.otf"
+
+    text_clip = TextClip(text=text, font_size=font_size, color=text_color, size=video_size,
+                         font=font_path, method='caption').with_position('center').with_duration(duration)
+
+    text_clip = text_clip.with_opacity(0).with_start(
+        fade_duration).with_end(duration - fade_duration)
+
+    bg_clip = ColorClip(size=video_size, color=bg_color, duration=duration)
+
+    return CompositeVideoClip([bg_clip, text_clip])
+
+
 segments = []
+video_clips = []
 
 for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=1):
     if row_idx > max_rows:
@@ -90,8 +112,26 @@ for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=1
         segments.extend(row_segments)
         segments.append(AudioSegment.silent(duration=2000))
 
+        audio_filename = f"output/audio_{row_idx}.mp3"
+        row_audio = sum(row_segments)
+        row_audio.export(audio_filename, format="mp3")
+
+        video_filename = f"output/video_{row_idx}.mp4"
+        text = row[0]
+        duration = row_audio.duration_seconds
+
+        video_clip = generate_video(
+            text, duration)
+        video_clips.append(video_clip)
 
 if segments:
     final_audio = sum(segments)
     final_audio.export("output/final.mp3", format="mp3")
     print("Audiofile created: output/final.mp3")
+
+if video_clips:
+    final_video = concatenate_videoclips(video_clips, method="compose")
+    final_video = final_video.with_audio(AudioFileClip("output/final.mp3"))
+    final_video.write_videofile(
+        "output/final_video.mp4", fps=30, codec="libx264", audio_codec="aac")
+    print("Video file created: output/final_video.mp4")
