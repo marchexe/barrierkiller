@@ -2,26 +2,27 @@ import os
 from pydub import AudioSegment
 from openpyxl import load_workbook
 from google.cloud import texttospeech
-from moviepy import TextClip, CompositeVideoClip, ColorClip, AudioFileClip, concatenate_videoclips
+from moviepy import TextClip, AudioFileClip, CompositeVideoClip, concatenate_videoclips
 
-os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = 'service_account.json'
+
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service_account.json"
 client = texttospeech.TextToSpeechClient()
 
 wb = load_workbook("vocab.xlsx")
 ws = wb.active
 
-os.makedirs('components', exist_ok=True)
-os.makedirs('output', exist_ok=True)
+os.makedirs("components", exist_ok=True)
+os.makedirs("output", exist_ok=True)
 
 max_rows = 2
 
 columns_order = ["de", "ru", "b1_de", "b1_ru", "b2_de", "b2_ru"]
 
 voice_map = {
-    "de": texttospeech.VoiceSelectionParams(language_code='de-DE', name='de-DE-Studio-B'),
-    "ru": texttospeech.VoiceSelectionParams(language_code='ru-RU', name='ru-RU-Wavenet-D'),
-    "b2_de": texttospeech.VoiceSelectionParams(language_code='de-DE', name='de-DE-Studio-C'),
-    "b2_ru": texttospeech.VoiceSelectionParams(language_code='ru-RU', name='ru-RU-Wavenet-C')
+    "de": texttospeech.VoiceSelectionParams(language_code="de-DE", name="de-DE-Studio-B"),
+    "ru": texttospeech.VoiceSelectionParams(language_code="ru-RU", name="ru-RU-Wavenet-D"),
+    "b2_de": texttospeech.VoiceSelectionParams(language_code="de-DE", name="de-DE-Studio-C"),
+    "b2_ru": texttospeech.VoiceSelectionParams(language_code="ru-RU", name="ru-RU-Wavenet-C")
 }
 
 audio_config = texttospeech.AudioConfig(
@@ -58,17 +59,10 @@ def generate_video(text, duration):
     bg_color = (30, 30, 30)
     fade_duration = 0.5
 
-    font_path = "dejavu-sans-book.otf"
+    clip = TextClip(font="dejavu-sans-book.otf", text=text, font_size=font_size, size=video_size,
+                         color=text_color, method="caption", text_align="center", duration=duration)
 
-    text_clip = TextClip(text=text, font_size=font_size, color=text_color, size=video_size,
-                         font=font_path, method='caption').with_position('center').with_duration(duration)
-
-    text_clip = text_clip.with_opacity(0).with_start(
-        fade_duration).with_end(duration - fade_duration)
-
-    bg_clip = ColorClip(size=video_size, color=bg_color, duration=duration)
-
-    return CompositeVideoClip([bg_clip, text_clip])
+    return CompositeVideoClip([clip])
 
 
 segments = []
@@ -130,7 +124,7 @@ if segments:
     print("Audiofile created: output/final.mp3")
 
 if video_clips:
-    final_video = concatenate_videoclips(video_clips, method="compose")
+    final_video = concatenate_videoclips(clips=video_clips, method="chain")
     final_video = final_video.with_audio(AudioFileClip("output/final.mp3"))
     final_video.write_videofile(
         "output/final_video.mp4", fps=30, codec="libx264", audio_codec="aac")
