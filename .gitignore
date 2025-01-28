@@ -1,5 +1,5 @@
 .venv
-service_account.json
+service-account.json
 vocab.xlsx
 
 components
