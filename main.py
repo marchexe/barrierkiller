@@ -1,12 +1,11 @@
 import os
-from pydub import AudioSegment
 from openpyxl import load_workbook
 from google.cloud import texttospeech
 from moviepy import TextClip, AudioFileClip, concatenate_videoclips
 from moviepy.video.fx import CrossFadeIn, CrossFadeOut
 
 
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service_account.json"
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/home/veritas/projects/private/barrierkiller/service-account.json"
 client = texttospeech.TextToSpeechClient()
 
 wb = load_workbook("vocab.xlsx")

@@ -1,6 +1,6 @@
-.venv/
+.venv
 service_account.json
 vocab.xlsx
 
-/components
-/output
+components
+output
