@@ -1,29 +1,30 @@
 import os
-from pydub import AudioSegment
+import subprocess
 from openpyxl import load_workbook
 from google.cloud import texttospeech
-from moviepy import TextClip, AudioFileClip, concatenate_videoclips
-from moviepy.video.fx import CrossFadeIn, CrossFadeOut
-
 
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service_account.json"
 client = texttospeech.TextToSpeechClient()
 
-wb = load_workbook("vocab.xlsx")
-ws = wb.active
+workbook = load_workbook("vocab.xlsx")
+sheet = workbook.active
 
 os.makedirs("components", exist_ok=True)
 os.makedirs("output", exist_ok=True)
 
-max_rows = 2
+max_rows = 3
 
 columns_order = ["de", "ru", "b1_de", "b1_ru", "b2_de", "b2_ru"]
 
 voice_map = {
     "de": texttospeech.VoiceSelectionParams(language_code="de-DE", name="de-DE-Studio-B"),
     "ru": texttospeech.VoiceSelectionParams(language_code="ru-RU", name="ru-RU-Wavenet-D"),
+    "b1_de": texttospeech.VoiceSelectionParams(language_code="de-DE", name="de-DE-Studio-B"),
+    "b1_ru": texttospeech.VoiceSelectionParams(language_code="ru-RU", name="ru-RU-Wavenet-D"),
+    "b1_de_repeat": texttospeech.VoiceSelectionParams(language_code="de-DE", name="de-DE-Studio-B"),
     "b2_de": texttospeech.VoiceSelectionParams(language_code="de-DE", name="de-DE-Studio-C"),
-    "b2_ru": texttospeech.VoiceSelectionParams(language_code="ru-RU", name="ru-RU-Wavenet-C")
+    "b2_ru": texttospeech.VoiceSelectionParams(language_code="ru-RU", name="ru-RU-Wavenet-C"),
+    "b2_de_repeat": texttospeech.VoiceSelectionParams(language_code="de-DE", name="de-DE-Studio-C")
 }
 
 audio_config = texttospeech.AudioConfig(
@@ -34,101 +35,120 @@ audio_config = texttospeech.AudioConfig(
 
 
 def generate_speech(text, voice, filename):
-
     if not text or not text.strip():
+        print(f"Skipping empty text for {filename}")
         return None
 
     path = f"components/{filename}"
-
     if os.path.exists(path):
         print(f"File already exists: {path}")
-        return AudioSegment.from_file(path)
+        return path
 
-    print(f"Generating a new file: {path}")
+    print(f"Generating speech: {path}")
     synthesis_input = texttospeech.SynthesisInput(text=text)
     response = client.synthesize_speech(
-        input=synthesis_input, voice=voice, audio_config=audio_config)
+        input=synthesis_input, voice=voice, audio_config=audio_config
+    )
 
     with open(path, "wb") as f:
         f.write(response.audio_content)
 
-    return AudioSegment.from_file(path)
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        print(f"File was not created: {path}")
+        return None
+
+    return path
 
 
-def generate_video(text, duration):
-    clip = TextClip(
-        text=text,
-        font="dejavu-sans-book.otf",
-        font_size=60,
-        color=(255, 255, 255),
-        size=(1920, 1080),
-        method="caption",
-        text_align="center",
-        bg_color=(30, 30, 30),
-        duration=duration
+def generate_silence(duration_ms, filename):
+    path = f"components/{filename}"
+    if os.path.exists(path):
+        return path
+    subprocess.run(
+        ["ffmpeg", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t",
+            str(duration_ms / 1000), "-q:a", "9", "-acodec", "mp3", path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
     )
+    return path if os.path.exists(path) else None
 
-    return clip
 
+one_sec_silence = generate_silence(1000, "silence_1s.mp3")
+two_sec_silence = generate_silence(2000, "silence_2s.mp3")
 
-video_clips = []
+final_audio_files = []
 
-for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=1):
+for row_idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
     if row_idx > max_rows:
         break
 
-    row_segments = []
-    last_german_audio = None
+    row_audio_files = []
+    audio_paths = {}
 
     for col_idx, text in enumerate(row):
         if col_idx >= len(columns_order):
             break
 
         col_name = columns_order[col_idx]
-
-        if "b2" in col_name:
-            voice_key = "b2_de" if "de" in col_name else "b2_ru"
-        else:
-            voice_key = "de" if "de" in col_name else "ru"
-
-        voice = voice_map[voice_key]
+        voice = voice_map.get(col_name)
         filename = f"{col_name}_{row_idx}.mp3"
-        audio = generate_speech(text, voice, filename)
+        audio_path = generate_speech(text, voice, filename)
 
-        if audio:
-            row_segments.append(audio)
-            row_segments.append(AudioSegment.silent(duration=1000))
+        if audio_path:
+            audio_paths[col_name] = audio_path
 
-            if "b1_de" in col_name or "b2_de" in col_name:
-                last_german_audio = audio
+    for col_name in columns_order:
+        if col_name in audio_paths:
+            row_audio_files.append(audio_paths[col_name])
+            row_audio_files.append(one_sec_silence)
 
-        if ("b1_ru" in col_name or "b2_ru" in col_name) and last_german_audio:
-            row_segments.append(last_german_audio)
-            row_segments.append(AudioSegment.silent(duration=1000))
+        if col_name == "b1_ru" and "b1_de" in audio_paths:
+            row_audio_files.append(audio_paths["b1_de"])
+            row_audio_files.append(one_sec_silence)
 
-    if row_segments:
-        if len(row_segments) > 0:
-            row_segments.pop()
+        if col_name == "b2_ru" and "b2_de" in audio_paths:
+            row_audio_files.append(audio_paths["b2_de"])
+            row_audio_files.append(one_sec_silence)
 
-        row_audio = sum(row_segments)
+    if row_audio_files:
+        row_audio_files.pop()
+        row_output = f"output/row_{row_idx}.mp3"
 
-        audio_filename = f"output/audio_{row_idx}.mp3"
-        row_audio.export(audio_filename, format="mp3")
+        with open(f"components/row_{row_idx}.txt", "w") as f:
+            for audio_file in row_audio_files:
+                if not os.path.exists(audio_file):
+                    print(f"Missing file {audio_file}")
+                f.write(f"file '{os.path.abspath(audio_file)}'\n")
 
-        row_text = " | ".join([str(x) for x in row if x])
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i",
+                f"components/row_{row_idx}.txt", "-acodec", "mp3", row_output],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
 
-        duration = row_audio.duration_seconds
+        if not os.path.exists(row_output):
+            print(f"Failed to create {row_output}")
+        else:
+            final_audio_files.append(row_output)
+            final_audio_files.append(two_sec_silence)
 
-        video_clip = generate_video(row_text, duration)
-        video_clip = video_clip.with_audio(AudioFileClip(audio_filename))
+if final_audio_files:
+    final_audio_files.pop()
+    final_audio_output = "output/final_audio.mp3"
 
-        video_clips.append(video_clip)
+    with open("components/final_list.txt", "w") as f:
+        for audio_file in final_audio_files:
+            f.write(f"file '{os.path.abspath(audio_file)}'\n")
 
-if video_clips:
-    final_video = concatenate_videoclips(video_clips, method="chain")
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i",
+            "components/final_list.txt", "-acodec", "mp3", final_audio_output],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
 
-    final_video.write_videofile(
-        "output/final_video.mp4", fps=30, codec="libx264", audio_codec="aac")
-    print("Final video file created: output/final_video.mp4")
-else:
-    print("No non-empty rows/cells were found for audio/video generation.")
+    if os.path.exists(final_audio_output):
+        print(f"Final audiofile created: {final_audio_output}")
+    else:
+        print(f"Final audio file was not created")
