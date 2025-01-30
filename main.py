@@ -2,6 +2,9 @@ import os
 import subprocess
 from openpyxl import load_workbook
 from google.cloud import texttospeech
+from PIL import Image, ImageDraw, ImageFont
+from mutagen.mp3 import MP3
+from moviepy import TextClip, AudioFileClip, concatenate_videoclips, vfx
 
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service_account.json"
 client = texttospeech.TextToSpeechClient()
@@ -11,6 +14,7 @@ sheet = workbook.active
 
 os.makedirs("components", exist_ok=True)
 os.makedirs("output", exist_ok=True)
+os.makedirs("slides", exist_ok=True)
 
 max_rows = 3
 
@@ -73,82 +77,124 @@ def generate_silence(duration_ms, filename):
     return path if os.path.exists(path) else None
 
 
-one_sec_silence = generate_silence(1000, "silence_1s.mp3")
-two_sec_silence = generate_silence(2000, "silence_2s.mp3")
+def get_audio_duration(file_path):
+    if not os.path.exists(file_path):
+        return 1
+    audio = MP3(file_path)
+    return max(1, round(audio.info.length))
 
-final_audio_files = []
 
-for row_idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
-    if row_idx > max_rows:
-        break
-
-    row_audio_files = []
-    audio_paths = {}
-
-    for col_idx, text in enumerate(row):
-        if col_idx >= len(columns_order):
-            break
-
-        col_name = columns_order[col_idx]
-        voice = voice_map.get(col_name)
-        filename = f"{col_name}_{row_idx}.mp3"
-        audio_path = generate_speech(text, voice, filename)
-
-        if audio_path:
-            audio_paths[col_name] = audio_path
-
-    for col_name in columns_order:
-        if col_name in audio_paths:
-            row_audio_files.append(audio_paths[col_name])
-            row_audio_files.append(one_sec_silence)
-
-        if col_name == "b1_ru" and "b1_de" in audio_paths:
-            row_audio_files.append(audio_paths["b1_de"])
-            row_audio_files.append(one_sec_silence)
-
-        if col_name == "b2_ru" and "b2_de" in audio_paths:
-            row_audio_files.append(audio_paths["b2_de"])
-            row_audio_files.append(one_sec_silence)
-
-    if row_audio_files:
-        row_audio_files.pop()
-        row_output = f"output/row_{row_idx}.mp3"
-
-        with open(f"components/row_{row_idx}.txt", "w") as f:
-            for audio_file in row_audio_files:
-                if not os.path.exists(audio_file):
-                    print(f"Missing file {audio_file}")
-                f.write(f"file '{os.path.abspath(audio_file)}'\n")
-
-        subprocess.run(
-            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i",
-                f"components/row_{row_idx}.txt", "-acodec", "mp3", row_output],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-
-        if not os.path.exists(row_output):
-            print(f"Failed to create {row_output}")
-        else:
-            final_audio_files.append(row_output)
-            final_audio_files.append(two_sec_silence)
-
-if final_audio_files:
-    final_audio_files.pop()
-    final_audio_output = "output/final_audio.mp3"
-
-    with open("components/final_list.txt", "w") as f:
-        for audio_file in final_audio_files:
-            f.write(f"file '{os.path.abspath(audio_file)}'\n")
-
-    subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i",
-            "components/final_list.txt", "-acodec", "mp3", final_audio_output],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
+def generate_text_clip(text, duration, size=(1920, 1080)):
+    text_clip = TextClip(
+        font="dejavu-sans-book.otf",
+        text=str(text),
+        font_size=50,
+        color=(255, 255, 255),
+        bg_color=(30, 30, 30),
+        text_align=center
     )
 
-    if os.path.exists(final_audio_output):
-        print(f"Final audiofile created: {final_audio_output}")
-    else:
-        print(f"Final audio file was not created")
+    text_clip = text_clip.with_duration(duration)
+    text_clip = text_clip.with_position('center')
+
+    text_clip = text_clip.with_effects(
+        [vfx.CrossFadeIn(0.5), vfx.CrossFadeOut(0.5)])
+
+    return text_clip
+
+
+def get_clip_timing(audio_paths, silence_paths):
+    timing = []
+    current_time = 0
+
+    for audio_path in audio_paths:
+        if audio_path:
+            duration = get_audio_duration(audio_path)
+            timing.append((current_time, duration))
+            current_time += duration
+
+            silence_duration = get_audio_duration(silence_paths['one_sec'])
+            current_time += silence_duration
+
+        return timing
+
+
+def generate_video(sheet, max_rows, columns_order, silence_paths):
+    video_clips = []
+
+    for row_idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+        if row_idx > max_rows:
+            break
+
+        row_audio_path = f"output/row_{row_idx}.mp3"
+        if not os.path.exists(row_audio_path):
+            continue
+
+        audio_paths = []
+        texts = []
+
+        for col_idx, text in enumerate(row):
+            if col_idx >= len(columns_order):
+                break
+
+            col_name = columns_order[col_idx]
+            audio_path = f"components/{col_name}_{row_idx}.mp3"
+
+            if os.path.exists(audio_path):
+                audio_path.append(audio_path)
+                texts.append(str(text))
+
+                if col_name == "b1_ru":
+                    repeat_path = f"components/b1_de_{row_idx}.mp3"
+                    if os.path.exists(repeat_path):
+                        audio_paths.append(repeat_path)
+                        texts.append(str(row[columns_order.index("b1_de")]))
+                    elif col_name == "b2_ru":
+                        repeat_path = f"components/b2_de_{row_idx}.mp3"
+                        if os.path.exists(repeat_path):
+                            audio_paths.append(repeat_path)
+                            texts.append(
+                                str(row[columns_order.index("b2_de")]))
+
+        clip_timing = get_clip_timing(audio_paths, silence_paths)
+
+        for (text, (start_time, duration)) in zip(texts, clip_timing):
+            if text and text.strip():
+                clip = generate_text_clip(text, duration)
+                video_clips.append(clip)
+
+    if video_clips:
+        try:
+            final_video = concatenate_videoclips(video_clips, method=compose)
+
+            final_video = AudioFileClip("output/final_audio.mp3")
+            final_video = final_video.with_audio(final_audio)
+
+            final_video.write_videofile(
+                "output/final_video.mp4",
+                fps=30,
+                codec='libx264',
+                audio_codec='aac'
+            )
+
+            final_video.close()
+            final_audio.close()
+
+            print("Video generation completed successfully")
+
+        except Exception as e:
+            print(f"Error during video generation: {str(e)}")
+
+        finally:
+            for clip in video_clips:
+                clip.close()
+
+
+if __name__ == "__main__":
+    silence_paths = {
+        'one_sec': generate_silence(1000, "silence_1s.mp3"),
+        'two_sec': generate_silence(2000, "silence_2s.mp3")
+    }
+
+    if os.path.exists("output/final_audio.mp3"):
+        generate_video(sheet, max_rows, columns_order, silence_paths)
